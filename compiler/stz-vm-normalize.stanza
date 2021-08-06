@@ -603,7 +603,7 @@ defn normalize (f0:VMFunction, databuffer:DataBuffer, backend:Backend, iotable:I
           emit(buffer, LabelIns(has-space-lbl))
           emit(buffer, AllocOnHeap(x, size-on-heap))
           emit(buffer, StoreIns(x, false, -1, Tag(type)))
-      (i:StoreIns) :
+      (i:StoreIns) :      
         ;Compute new offset after factoring in ref tag
         val offset* = (offset(i) + 8 - 1) when type(buffer,x(i)) is VMRef
                  else offset(i)
@@ -619,6 +619,114 @@ defn normalize (f0:VMFunction, databuffer:DataBuffer, backend:Backend, iotable:I
             val z* = ensure(small-immediate?,z(i))
             emit(buffer, Op2Ins(base, AddOp(), x*, y*))
             emit(buffer, StoreIns(base, false, offset*, z*, class(i)))
+      (i:StoreWithBarrierIns) :
+        ;x[y + offset] = z
+        ;  y is false to indicate that offset is constant and known.
+        ;  y is computed if we're assigning into an array.
+        fatal("Barrier instructions assume location is heap-object.") when type(buffer,x(i)) is-not VMRef
+
+        ;Compute new offset after factoring in ref tag
+        val offset* = offset(i) + 8 - 1
+
+        ;[TODO] Clean up 
+        ;Pseudocode:
+        ;Test whether we're storing a proper pointer
+        ;  GOTO SKIP_BARRER when z & 7 != 1
+        ;Test whether the location is from the young generation
+        ;  GOTO SKIP_BARRIER when x >= YOUNG_GEN_START
+        ;Compute bit index
+        ;  BIT_INDEX = ((x + y + offset) - HEAP_START) >>> 3
+        ;Compute mark word address (bit index / 64 bits) * 8 bytes
+        ;  MARK_WORD_ADDR = REMEMBER_SET + (BIT_INDEX >>> 6) << 3
+        ;Compute marking mask 1 << (bit index % 64)
+        ;  MARK_MASK = 1 << (BIT_INDEX & 3F)
+        ;Test whether value is from young generation
+        ;  GOTO VALUE_FROM_OLD when z < YOUNG_GEN_START
+        ;Now guaranteed that value is from young generation.
+        ;Set the remembered bit.
+        ;  [MARK_WORD_ADDR] |= MARK_MASK
+        ;  GOTO SKIP_BARRIER
+        ;Now guaranteed that value is from old generation
+        ;Clear the remembered bit.
+        ;VALUE_FROM_OLD:
+        ;  [MARK_WORD_ADDR] &= ~MARK_MASK
+        ;SKIP_BARRIER:
+        ;Store as normal.
+
+        ;Create locals and labels
+        val bit-index = make-local(buffer, VMLong())
+        val base = make-local(buffer, VMLong())
+        val mark-word-addr = make-local(buffer, VMLong())
+        val mark-mask = make-local(buffer, VMLong())
+        val young-gen-start = make-local(buffer, VMLong())
+        val remembered-set = make-local(buffer, VMLong())
+        val heap-start = make-local(buffer, VMLong())
+        val mark-word = make-local(buffer, VMLong())
+        val value-is-normal-pointer = make-label(buffer)
+        val skip-barrier = make-label(buffer)
+        val value-from-old = make-label(buffer)
+        val value-from-young = make-label(buffer)
+        val compute-bit-index = make-label(buffer)
+        val store-mark-word = make-label(buffer)
+
+        ;Ensure things fit in x86.
+        val x* = ensure(storage-immediate?,x(i))
+        val z* = ensure(small-immediate?,z(i))
+        match(y(i)) :
+          (f:False) :
+            emit(buffer, Op2Ins(base, AddOp(), x*, NumConst(offset(i))))
+          (y:VMImm) :
+            ;[TODO] Use lea instruction to squish two adds into one.
+            val y* = ensure(small-immediate?,y)                
+            emit(buffer, Op2Ins(base, AddOp(), x*, y*))
+            emit(buffer, Op2Ins(base, AddOp(), base, NumConst(offset(i))))                
+
+        ;Test whether storing proper pointer.
+        val tmp = make-local(buffer, VMLong())
+        emit(buffer, Op2Ins(tmp, AndOp(), z*, NumConst(7L)))
+        emit(buffer, Branch2Ins(value-is-normal-pointer, skip-barrier, EqOp(), tmp, NumConst(1L)))
+        ;Test whether location is from young generation.
+        ;[TODO] We can use Branch2Ins directly on value in memory, so no need for LoadSpecial.
+        emit(buffer, LabelIns(value-is-normal-pointer))
+        emit(buffer, LoadSpecialIns(young-gen-start, YoungGenStart))
+        emit(buffer, Branch2Ins(skip-barrier, compute-bit-index, UgeOp(), x*, young-gen-start))
+        ;Compute bit index
+        emit(buffer, LabelIns(compute-bit-index))
+        ;[TODO] We can directly subtract value in memory, so no need for LoadSpecial.
+        emit(buffer, LoadSpecialIns(heap-start, HeapStart))
+        emit(buffer, Op2Ins(bit-index, SubOp(), base, heap-start))
+        emit(buffer, Op2Ins(bit-index, ShrOp(), bit-index, NumConst(3L)))
+        ;Compute mark word address (bit index / 64 bits)
+        emit(buffer, Op2Ins(mark-word-addr, ShrOp(), bit-index, NumConst(6L)))
+        emit(buffer, Op2Ins(mark-word-addr, ShlOp(), bit-index, NumConst(3L)))
+        emit(buffer, LoadSpecialIns(remembered-set, RememberedSetStart)) ;[TODO] Elide the special load.
+        emit(buffer, Op2Ins(mark-word-addr, AddOp(), mark-word-addr, remembered-set))
+        ;Compute marking mask: 1 << (bit index % 64)
+        emit(buffer, Op2Ins(bit-index, AndOp(), bit-index, NumConst(0x3FL)))
+        emit(buffer, Op2Ins(mark-mask, ShlOp(), NumConst(1L), bit-index))
+        ;Load the original mark word
+        emit(buffer, LoadIns(mark-word, mark-word-addr, false, 0))
+        ;Test whether value is from young generation
+        emit(buffer, Branch2Ins(value-from-old, value-from-young, UltOp(), z*, young-gen-start))
+        ;Now guaranteed that value is from young generation.
+        ;Compute the new mark word by setting the remembered bit.
+        ;[TODO] Just or with the memory value directly instead of doing a bunch of loads/stores.
+        emit(buffer, LabelIns(value-from-young))            
+        emit(buffer, Op2Ins(mark-word, OrOp(), mark-word, mark-mask))
+        emit(buffer, GotoIns(store-mark-word))
+        ;Now guaranteed that value is from old generation.
+        ;Compute the new mark word by clearing the remembered bit.
+        emit(buffer, LabelIns(value-from-old))
+        emit(buffer, Op1Ins(mark-mask, NotOp(), mark-mask))
+        emit(buffer, Op2Ins(mark-word, AndOp(), mark-word, mark-mask))
+        ;Store the mark word back into the remembered set.
+        emit(buffer, LabelIns(store-mark-word))
+        emit(buffer, StoreIns(mark-word-addr, false, 0, mark-word))
+        ;Past the barrier now
+        emit(buffer, LabelIns(skip-barrier))
+        ;Store as normal
+        emit(buffer, StoreIns(base, false, 0, z*, class(i)))            
+
       (i:LoadIns) :
         ;Compute new offset after factoring in ref tag
         val offset* = (offset(i) + 8 - 1) when type(buffer,y(i)) is VMRef
@@ -762,6 +870,16 @@ with: (printer => true)
 public defstruct StoreCRSPIns <: VMIns :
   y: VMImm
 with: (printer => true)
+
+public defstruct LoadSpecialIns <: VMIns :
+  x: Local
+  value: SpecialValue
+with: (printer => true)
+
+public defenum SpecialValue :
+  HeapStart
+  YoungGenStart
+  RememberedSetStart
 
 public defstruct LoadCArgIns <: VMIns :
   x: Local

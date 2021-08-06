@@ -930,6 +930,9 @@ defn load-instructions (function:VMFunc, backend:Backend) :
           push(MethodDispatch(multi(e), length(ys(e))))
         (e:StoreIns) :      
           push(Op(StoreOp(offset(e)), List(), List(get-imm(x(e)), get-imm(z(e)))))
+        (e:StoreWithBarrierIns) :
+          ;[TODO] We need to store into the remembered set for this instruction.
+          push(Op(StoreOp(offset(e)), List(), List(get-imm(x(e)), get-imm(z(e)))))
         (e:LoadIns) :
           push(Op(LoadOp(offset(e)), List(get-var(x(e))), List(get-imm(y(e)))))
         (e:DumpIns) :

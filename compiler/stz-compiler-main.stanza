@@ -233,6 +233,12 @@ public defn compile (proj-manager:ProjManager,
                            bindings:Bindings|False,
                            filename:String,
                            save-pkgs?:True|False) :
+    println("COMPILING TO ASSEMBLY")
+    for p in packages do :
+      println("=== COMPILE THIS PACKAGE ===")
+      println("Package has type %_" % [object-type(p)])
+      println(p)
+
     val [binding-package, all-packages] =
       match(bindings:Bindings) :
         val p = to-vmpackage(bindings)
