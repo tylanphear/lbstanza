@@ -269,7 +269,11 @@ defn verify-installation () :
 
   ;Check conditions
   ensure-license-exists!()
-  ensure-matching-version!()  
+  #if-defined(PLATFORM-WINDOWS):
+    ; TODO: re-enable once process library is implemented in Windows
+    false
+  #else:
+    ensure-matching-version!()
 
 ;============================================================
 ;============= Environment Variable Substitution ============

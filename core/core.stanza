@@ -7533,12 +7533,13 @@ defn SystemCallException (msg:String) :
 #if-defined(PLATFORM-WINDOWS) :
   #for (F in splice([
          (Process (filename:String, args:Seqable<String>,
-                   input:StreamSpecifier, output:StreamSpecifier, error:StreamSpecifier))
-         (Process (filename:String, args:Seqable<String>))
-         (input-stream (p:Process))
-         (output-stream (p:Process))
-         (error-stream (p:Process))
-         (state (p:Process))])) :
+                   input:StreamSpecifier, output:StreamSpecifier, error:StreamSpecifier) -> Process)
+         (Process (filename:String, args:Seqable<String>) -> Process)
+         (input-stream (p:Process) -> FileOutputStream)
+         (output-stream (p:Process) -> InputStream)
+         (error-stream (p:Process) -> InputStream)
+         (state (p:Process) -> ProcessState)
+         (wait (p:Process) -> ProcessState)])) :
     public defn F :
       fatal("Process library not yet supported on Windows.")
 
