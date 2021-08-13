@@ -1,7 +1,8 @@
 #ifdef PLATFORM_WINDOWS
-  #include<Windows.h>
+  #include<windows.h>
 #else
   #include<sys/wait.h>
+  #include<sys/mman.h>
 #endif
 #include<stdint.h>
 #include<unistd.h>
@@ -14,7 +15,6 @@
 #include<string.h>
 #include<sys/stat.h>
 #include<sys/types.h>
-#include<sys/mman.h>
 #include<dirent.h>
 #include<pthread.h>
 
@@ -226,6 +226,7 @@ void add_item (FreeList* list, void* item){
   list->size++;
 }
 
+#ifdef FMALLOC
 //============================================================
 //================== Fixed Memory Allocator ==================
 //============================================================
@@ -298,6 +299,7 @@ void ffree (void* ptr){
   Chunk* c = (Chunk*)((char*)ptr - sizeof(Chunk));
   add_item(&mem_chunks, c);
 }
+#endif
 
 //============================================================
 //===================== String List ==========================
@@ -347,6 +349,18 @@ void stringlist_add (StringList* list, char* string){
 //============================================================
 //================== Directory Handling ======================
 //============================================================
+
+#ifdef PLATFORM_WINDOWS
+// `stat()` doesn't exist on Windows, but _stat *does*, and
+// symlinks (as far as I can tell) aren't used.
+#define stat _stat
+#define lstat _stat
+#define S_ISLNK(x) 0
+
+int symlink(const char *target, const char *linkpath) {
+  return -1;
+}
+#endif
 
 int get_file_type (char* filename, int follow_sym_links) {
   struct stat filestat;  
@@ -943,6 +957,33 @@ void retrieve_process_state (long pid, ProcessState* s, int wait_for_termination
 
   //Read back process state
   read_process_state(launcher_out, s);
+}
+
+#else
+
+static void fail(const char* fn) {
+  fprintf(stderr, "error: %s called, but it's just a stub!", fn);
+  exit(-1);
+}
+
+void initialize_launcher_process(void) {
+  fail("initialize_launcher_process");
+}
+
+void retrieve_process_state (long pid, void* s, int wait_for_termination) {
+  fail("retrieve_process_state");
+}
+
+int launch_process (char* file, char** argvs,
+                    int input, int output, int error, int pipeid,
+                    void* process) {
+  fail("launch_process");
+  return -1;
+}
+
+int delete_process_pipes (FILE* input, FILE* output, FILE* error, int pipeid) {
+  fail("delete_process_pipes");
+  return -1;
 }
 
 #endif
