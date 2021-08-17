@@ -18,11 +18,15 @@
 #include<dirent.h>
 #include<pthread.h>
 
+#include "process.h"
+
 //       Forward Declarations
 //       ====================
 
+#ifdef FMALLOC
 //FMalloc Debugging
-void init_fmalloc ();
+static void init_fmalloc ();
+#endif
 
 //Stanza Alloc
 void* stz_malloc (long size);
@@ -180,6 +184,7 @@ int64_t file_time_modified (char* filename){
   return 0;
 }
 
+#ifdef FMALLOC
 //============================================================
 //======================= Free List ==========================
 //============================================================
@@ -190,13 +195,13 @@ typedef struct {
   void** items;
 } FreeList;
 
-FreeList make_freelist (int c){
+static FreeList make_freelist (int c){
   void** items = (void**)malloc(c * sizeof(void*));
   FreeList f = {c, 0, items};
   return f;
 }
 
-void ensure_capacity (FreeList* list, int c){
+static void ensure_capacity (FreeList* list, int c){
   if(list->capacity < c){
     int c2 = list->capacity;
     while(c2 < c) c2 *= 2;
@@ -208,7 +213,7 @@ void ensure_capacity (FreeList* list, int c){
   }
 }
 
-void delete_index (FreeList* list, int xi){
+static void delete_index (FreeList* list, int xi){
   int yi = list->size - 1;
   void* x = list->items[xi];
   void* y = list->items[yi];
@@ -219,14 +224,13 @@ void delete_index (FreeList* list, int xi){
   list->size--;
 }
 
-void add_item (FreeList* list, void* item){
+static void add_item (FreeList* list, void* item){
   int i = list->size;
   ensure_capacity(list, i + 1);
   list->items[i] = item;
   list->size++;
 }
 
-#ifdef FMALLOC
 //============================================================
 //================== Fixed Memory Allocator ==================
 //============================================================
@@ -240,7 +244,7 @@ char* mem_top;
 char* mem_limit;
 FreeList mem_chunks;
 
-void init_fmalloc () {
+static void init_fmalloc () {
   mem_chunks = make_freelist(8);
   long size = 8L * 1024L * 1024L * 1024L;
   mem_top = (char*)0x700000000L;
@@ -257,7 +261,7 @@ void init_fmalloc () {
   }  
 }
 
-Chunk* alloc_chunk (long size){  
+static Chunk* alloc_chunk (long size){
   long total_size = (size + sizeof(Chunk) + 7) & -8;
   Chunk* chunk = (Chunk*)mem_top;
   mem_top += total_size;
@@ -269,7 +273,7 @@ Chunk* alloc_chunk (long size){
   return chunk;
 }
 
-Chunk* find_chunk (long size){
+static Chunk* find_chunk (long size){
   Chunk* best = 0;
   int besti = 0;
   for(int i=0; i<mem_chunks.size; i++){
@@ -289,13 +293,13 @@ Chunk* find_chunk (long size){
   return best;
 }
 
-void* fmalloc (long size){
+static void* fmalloc (long size){
   Chunk* c = find_chunk(size);
   if(!c) c = alloc_chunk(size);
   return c->bytes;
 }
 
-void ffree (void* ptr){
+static void ffree (void* ptr){
   Chunk* c = (Chunk*)((char*)ptr - sizeof(Chunk));
   add_item(&mem_chunks, c);
 }
@@ -319,7 +323,7 @@ StringList* make_stringlist (int capacity){
   return list;
 }
 
-void ensure_stringlist_capacity (StringList* list, int c) {
+static void ensure_stringlist_capacity (StringList* list, int c) {
   if(list->capacity < c){
     int new_capacity = list->capacity;
     while(new_capacity < c) new_capacity *= 2;
@@ -1003,7 +1007,7 @@ int input_argv_needs_free;
 
 //     Main Driver
 //     ===========
-void* alloc (VMInit* init, long type, long size){
+static void* alloc (VMInit* init, long type, long size){
   void* ptr = init->heap_top + 8;
   *(long*)(init->heap_top) = type;
   init->heap_top += 8 + size;
