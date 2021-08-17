@@ -446,45 +446,6 @@ void stz_free (void* ptr){
 //============================================================
 #if defined(PLATFORM_OS_X) || defined(PLATFORM_LINUX)
 
-//------------------------------------------------------------
-//------------------- Structures -----------------------------
-//------------------------------------------------------------
-
-typedef struct {
-  long pid;
-  int pipeid;
-  FILE* in;
-  FILE* out;
-  FILE* err;
-} Process;
-
-typedef struct {
-  int state;
-  int code;
-} ProcessState;
-
-typedef struct {
-  char* pipe;
-  char* in_pipe;
-  char* out_pipe;
-  char* err_pipe;
-  char* file;
-  char** argvs;
-} EvalArg;
-
-#define PROCESS_RUNNING 0
-#define PROCESS_DONE 1
-#define PROCESS_TERMINATED 2
-#define PROCESS_STOPPED 3
-
-#define STANDARD_IN 0
-#define STANDARD_OUT 1
-#define PROCESS_IN 2
-#define PROCESS_OUT 3
-#define STANDARD_ERR 4
-#define PROCESS_ERR 5
-#define NUM_STREAM_SPECS 6
-
 #define RETURN_NEG(x) {int r=(x); if(r < 0) return -1;}
 
 //------------------------------------------------------------
@@ -698,10 +659,6 @@ void get_process_state (long pid, ProcessState* s, int wait_for_termination){
 //------------------------------------------------------------
 //---------------------- Launcher Main -----------------------
 //------------------------------------------------------------
-
-#define LAUNCH_COMMAND 0
-#define STATE_COMMAND 1
-#define WAIT_COMMAND 2
 
 void write_error_and_exit (int fd){
   int code = errno;
@@ -962,38 +919,10 @@ void retrieve_process_state (long pid, ProcessState* s, int wait_for_termination
   //Read back process state
   read_process_state(launcher_out, s);
 }
-
-#else
-
-static void fail(const char* fn) {
-  fprintf(stderr, "error: %s called, but it's just a stub!", fn);
-  exit(-1);
-}
-
-void initialize_launcher_process(void) {
-  fail("initialize_launcher_process");
-}
-
-void retrieve_process_state (long pid, void* s, int wait_for_termination) {
-  fail("retrieve_process_state");
-}
-
-int launch_process (char* file, char** argvs,
-                    int input, int output, int error, int pipeid,
-                    void* process) {
-  fail("launch_process");
-  return -1;
-}
-
-int delete_process_pipes (FILE* input, FILE* output, FILE* error, int pipeid) {
-  fail("delete_process_pipes");
-  return -1;
-}
-
-#endif
 //============================================================
 //============== End Process Runtime =========================
 //============================================================
+#endif
 
 #define STACK_TYPE 6
 
