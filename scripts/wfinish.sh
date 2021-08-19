@@ -7,7 +7,7 @@ if [[ -z "$CC" ]]; then
     exit 2
 fi
 
-CCFLAGS="$CCFLAGS -DPLATFORM_WINDOWS -std=gnu99 -O3 -fPIC -Wall -Werror -Wno-unused-variable -Wno-error=int-to-pointer-cast -Wno-error=unused-function"
+CCFLAGS="-DPLATFORM_WINDOWS -std=gnu99 -O3 -fPIC -Wall $CCFLAGS"
 CFILES=(
     core/sha256.c
     compiler/cvm.c

@@ -21,7 +21,11 @@ case "$PLATFORM" in
     windows) PLATFORM_PREFIX="w" ;;
     linux)   PLATFORM_PREFIX="l" ;;
     os-x)    PLATFORM_PREFIX=""  ;;
-    *) echo "Error: unsupported/unrecognized platform: $PLATFORM" 1>&2 && exit 2 ;;
+    *) cat 1>&2 <<EOF
+Error: unsupported/unrecognized platform: \`$PLATFORM\`
+Supported platforms: windows, linux, os-x
+EOF
+       exit 2 ;;
 esac
 
 echo "Building Stanza for $PLATFORM"
@@ -38,13 +42,15 @@ rm -rf "$PKGDIR"
 mkdir -p "$PKGDIR"
 
 #Clean
-$STANZA clean
+"$STANZA" clean
 
 echo "Compiling $PLATFORM Stanza Pkgs"
-$STANZA build-stanza.proj stz/driver $PKGFILES -pkg "$PKGDIR" -optimize -platform $PLATFORM
+"$STANZA" build-stanza.proj stz/driver $PKGFILES -pkg "$PKGDIR" -platform $PLATFORM
+echo "Compiling $PLATFORM Stanza Optimized Pkgs"
+"$STANZA" build-stanza.proj stz/driver $PKGFILES -pkg "$PKGDIR" -optimize -platform $PLATFORM
 
 echo "Compiling $PLATFORM Stanza Executable"
-$STANZA build-stanza.proj stz/driver -pkg "$PKGDIR" -s "$STANZA_S" -optimize -platform $PLATFORM
+"$STANZA" build-stanza.proj stz/driver -pkg "$PKGDIR" -s "$STANZA_S" -optimize -platform $PLATFORM
 
 echo "Finishing $PLATFORM executable"
 case "$PLATFORM" in
