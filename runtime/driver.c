@@ -19,6 +19,7 @@
 #include<pthread.h>
 
 #include "process.h"
+#include "types.h"
 
 //       Forward Declarations
 //       ====================
@@ -28,39 +29,37 @@
 static void init_fmalloc ();
 #endif
 
-//Stanza Alloc
-void* stz_malloc (long size);
-void stz_free (void* ptr);
+#define DEBUG_PRINT(...) fprintf(stderr, "DEBUG: " __VA_ARGS__); fflush(stderr)
 
 //     Stanza Defined Entities
 //     =======================
 typedef struct{
-  char* heap;
-  char* heap_top;
-  char* heap_limit;
-  char* free;
-  char* free_limit;
-  uint64_t current_stack;  
-  uint64_t system_stack;  
+  stz_byte* heap;
+  stz_byte* heap_top;
+  stz_byte* heap_limit;
+  stz_byte* free;
+  stz_byte* free_limit;
+  stz_long current_stack;  
+  stz_long system_stack;  
 } VMInit;
 
 typedef struct{
-  uint64_t returnpc;
-  uint64_t liveness_map;
-  uint64_t slots[];
+  stz_long returnpc;
+  stz_long liveness_map;
+  stz_long slots[];
 } StackFrame;
 
 typedef struct{
-  int pool_index;
-  int mark;
+  stz_int pool_index;
+  stz_int mark;
   StackFrame frames[];
 } StackFrameHeader;
 
 typedef struct{
-  uint64_t size;
+  stz_long size;
   StackFrame* frames;
   StackFrame* stack_pointer;
-  int pc;
+  stz_long pc;
 } Stack;
 
 //     Macro Readers
@@ -68,119 +67,118 @@ typedef struct{
 FILE* get_stdout () {return stdout;}
 FILE* get_stderr () {return stderr;}
 FILE* get_stdin () {return stdin;}
-int get_eof () {return EOF;}
-int get_errno () {return errno;}
+stz_int get_eof () {return (stz_int)EOF;}
+stz_int get_errno () {return (stz_int)errno;}
 
 //     Time of Day
 //     ===========
-int64_t current_time_us (void) {
+stz_long current_time_us (void) {
   struct timeval tv;
   gettimeofday(&tv, NULL);
-  return (int64_t)tv.tv_sec * 1000 * 1000 + (int64_t)tv.tv_usec;
+  return (stz_long)tv.tv_sec * 1000 * 1000 + (stz_long)tv.tv_usec;
 }
 
-int64_t current_time_ms (void) {
+stz_long current_time_ms (void) {
   struct timeval tv;
   gettimeofday(&tv, NULL);
-  return (int64_t)tv.tv_sec * 1000 + (int64_t)tv.tv_usec / 1000;
+  return (stz_long)tv.tv_sec * 1000 + (stz_long)tv.tv_usec / 1000;
 }
 
 //     Random Access Files
 //     ===================
-int64_t get_file_size (FILE* f) {
+stz_long get_file_size (FILE* f) {
   int64_t cur_pos = ftell(f);
   fseek(f, 0, SEEK_END);
-  int64_t size = ftell(f);
+  stz_long size = (stz_long)ftell(f);
   fseek(f, cur_pos, SEEK_SET);
   return size;
 }
 
-int file_seek (FILE* f, int64_t pos) {
-  return fseek(f, pos, SEEK_SET);
+stz_int file_seek (FILE* f, stz_long pos) {
+  return (stz_int)fseek(f, pos, SEEK_SET);
 }
 
-int file_skip (FILE* f, int64_t num) {
-  return fseek(f, num, SEEK_CUR);
+stz_int file_skip (FILE* f, stz_long num) {
+  return (stz_int)fseek(f, num, SEEK_CUR);
 }
 
-int file_set_length (FILE* f, int64_t size) {
-  return ftruncate(fileno(f), size);
+stz_int file_set_length (FILE* f, stz_long size) {
+  return (stz_int)ftruncate(fileno(f), size);
 }
 
-int64_t file_read_block (FILE* f, char* data, int64_t len) {
-  return fread(data, 1, len, f);
+stz_long file_read_block (FILE* f, char* data, stz_long len) {
+  return (stz_int)fread(data, 1, len, f);
 }
 
-int64_t file_write_block (FILE* f, char* data, int64_t len) {
-  return fwrite(data, 1, len, f);
+stz_long file_write_block (FILE* f, char* data, stz_long len) {
+  return (stz_int)fwrite(data, 1, len, f);
 }
 
 
 //     Path Resolution
 //     ===============
 #ifdef PLATFORM_WINDOWS
-  int file_exists (char* filename) {
-    int attrib = GetFileAttributes(filename);
+  static int file_exists (const stz_byte* filename) {
+    int attrib = GetFileAttributes((LPCSTR)filename);
     return attrib != INVALID_FILE_ATTRIBUTES;
   }
 
-  char* resolve_path (char* filename){
+  stz_byte* resolve_path (const stz_byte* filename){
     if(file_exists(filename)){
       char* fileext;
       char* path = (char*)stz_malloc(2048);
-      int ret = GetFullPathName(filename, 2048, path, &fileext);
+      int ret = GetFullPathName((LPCSTR)filename, 2048, path, &fileext);
       if(ret == 0){
         stz_free(path);
-        return 0;
+        return NULL;
       }else{
-        return path;
+        return (stz_byte*)path;
       }             
     }
     else{
-      return 0;
+      return NULL;
     }
   }
 #else
-  char* realpath(const char *path, char *resolved_path);
-  char* resolve_path (char* filename){
-    return realpath(filename, 0);
+  stz_byte* resolve_path (const stz_byte* filename){
+    return realpath(C_CSTR(filename), 0);
   }
 #endif
 
 //     Environment Variable Setting
 //     ============================
 #ifdef PLATFORM_WINDOWS
-  int setenv (char* name, char* value, int overwrite) {
+  stz_int setenv (const stz_byte* name, const stz_byte* value, stz_int overwrite) {
     //If we don't want to overwrite previous value, then check whether it exists.
     //If it does, then just return 0.
     if(!overwrite){
-      if(getenv(name) == 0)
+      if(getenv(C_CSTR(name)) == 0)
         return 0;
     }
     //(Over)write the environment variable.
-    char* buffer = (char*)stz_malloc(strlen(name) + strlen(value) + 10);
-    sprintf(buffer, "%s=%s", name, value);
+    char* buffer = (char*)stz_malloc(strlen(C_CSTR(name)) + strlen(C_CSTR(value)) + 10);
+    sprintf(buffer, "%s=%s", C_CSTR(name), C_CSTR(value));
     int r = _putenv(buffer);
     stz_free(buffer);
-    return r;
+    return (stz_int)r;
   }
 
-  int unsetenv (char* name){
-    char* buffer = (char*)stz_malloc(strlen(name) + 10);
-    sprintf(buffer, "%s=", name);
+  stz_int unsetenv (const stz_byte* name){
+    char* buffer = (char*)stz_malloc(strlen(C_CSTR(name)) + 10);
+    sprintf(buffer, "%s=", C_CSTR(name));
     int r = _putenv(buffer);
     stz_free(buffer);
-    return r;
+    return (stz_int)r;
   }
 #endif
 
 //             Time Modified
 //             =============
 
-int64_t file_time_modified (char* filename){
+stz_long file_time_modified (const stz_byte* filename){
   struct stat attrib;
-  if(stat(filename, &attrib) == 0)
-    return (int64_t)attrib.st_mtime;
+  if(stat(C_CSTR(filename), &attrib) == 0)
+    return (stz_long)attrib.st_mtime;
   return 0;
 }
 
@@ -310,25 +308,25 @@ static void ffree (void* ptr){
 //============================================================
 
 typedef struct {
-  int n;
-  int capacity;
-  char** strings;
+  stz_int n;
+  stz_int capacity;
+  stz_byte** strings;
 } StringList;
 
-StringList* make_stringlist (int capacity){
+StringList* make_stringlist (stz_int capacity){
   StringList* list = (StringList*)malloc(sizeof(StringList));
   list->n = 0;
   list->capacity = capacity;
-  list->strings = malloc(capacity * sizeof(char*));
+  list->strings = (stz_byte**)malloc(capacity * sizeof(stz_byte*));
   return list;
 }
 
-static void ensure_stringlist_capacity (StringList* list, int c) {
+static void ensure_stringlist_capacity (StringList* list, stz_int c) {
   if(list->capacity < c){
-    int new_capacity = list->capacity;
+    stz_int new_capacity = list->capacity;
     while(new_capacity < c) new_capacity *= 2;
-    char** new_strings = malloc(new_capacity * sizeof(char*));
-    memcpy(new_strings, list->strings, list->n * sizeof(char*));
+    stz_byte** new_strings = (stz_byte**)malloc(new_capacity * sizeof(stz_byte*));
+    memcpy(new_strings, list->strings, list->n * sizeof(stz_byte*));
     list->capacity = new_capacity;
     free(list->strings);
     list->strings = new_strings;
@@ -342,11 +340,11 @@ void free_stringlist (StringList* list){
   free(list);
 }
 
-void stringlist_add (StringList* list, char* string){
+void stringlist_add (StringList* list, const stz_byte* string){
   ensure_stringlist_capacity(list, list->n + 1);
-  char* copy = malloc(strlen(string) + 1);
-  strcpy(copy, string);
-  list->strings[list->n] = copy;
+  char* copy = malloc(strlen(C_CSTR(string)) + 1);
+  strcpy(copy, C_CSTR(string));
+  list->strings[list->n] = STZ_STR(copy);
   list->n++;
 }
 
@@ -361,16 +359,16 @@ void stringlist_add (StringList* list, char* string){
 #define lstat _stat
 #define S_ISLNK(x) 0
 
-int symlink(const char *target, const char *linkpath) {
+stz_int symlink(const stz_byte* target, const stz_byte* linkpath) {
   return -1;
 }
 #endif
 
-int get_file_type (char* filename, int follow_sym_links) {
+stz_int get_file_type (const stz_byte* filename, stz_int follow_sym_links) {
   struct stat filestat;  
   int result;
-  if(follow_sym_links) result = stat(filename, &filestat);
-  else result = lstat(filename, &filestat);
+  if(follow_sym_links) result = stat((const char*)filename, &filestat);
+  else result = lstat((const char*)filename, &filestat);
                          
   if(result == 0){
     if(S_ISREG(filestat.st_mode))
@@ -387,9 +385,9 @@ int get_file_type (char* filename, int follow_sym_links) {
   }
 }
 
-StringList* list_dir (char* filename){
+StringList* list_dir (const stz_byte* filename){
   //Open directory
-  DIR* dir = opendir(filename);
+  DIR* dir = opendir(C_CSTR(filename));
   if(dir == NULL) return 0;
   
   //Allocate memory for strings
@@ -403,7 +401,7 @@ StringList* list_dir (char* filename){
       return list;
     }
     //Notify
-    stringlist_add(list, entry->d_name);
+    stringlist_add(list, STZ_CSTR(entry->d_name));
   }
 
   free(list);
@@ -414,18 +412,18 @@ StringList* list_dir (char* filename){
 //===================== Sleeping =============================
 //============================================================
 
-int sleep_us (long us){
+stz_int sleep_us (stz_long us){
   struct timespec t1, t2;
   t1.tv_sec = 0;
   t1.tv_nsec = us * 1000L;
-  return nanosleep(&t1, &t2);
+  return (stz_int)nanosleep(&t1, &t2);
 }
 
 //============================================================
 //================= Stanza Memory Allocator ==================
 //============================================================
 
-void* stz_malloc (long size){
+void* stz_malloc (stz_long size){
   #if defined(FMALLOC)
     return fmalloc(size);
   #else
@@ -452,19 +450,7 @@ void stz_free (void* ptr){
 //-------------------- Utilities -----------------------------
 //------------------------------------------------------------
 
-void exit_with_error (){
-  fprintf(stderr, "%s\n", strerror(errno));
-  exit(-1);
-}
-
-int count_non_null (void** xs){
-  int n=0;
-  while(xs[n] != NULL)
-    n++;
-  return n;
-}
-
-char* string_join (char* a, char* b){
+static char* string_join (char* a, char* b){
   int len = strlen(a) + strlen(b);
   char* buffer = (char*)stz_malloc(len + 1);
   sprintf(buffer, "%s%s", a, b);
@@ -472,7 +458,7 @@ char* string_join (char* a, char* b){
 }
 
 //Opening a named pipe
-int open_pipe (char* prefix, char* suffix, int options){
+static int open_pipe (char* prefix, char* suffix, int options){
   char* name = string_join(prefix, suffix);
   int fd = open(name, options);
   stz_free(name);
@@ -480,11 +466,12 @@ int open_pipe (char* prefix, char* suffix, int options){
 }
 
 //Creating a named pipe
-int make_pipe (char* prefix, char* suffix){
+static int make_pipe (char* prefix, char* suffix){
   char* name = string_join(prefix, suffix);
   return mkfifo(name, S_IRUSR|S_IWUSR);
 }
 
+<<<<<<< HEAD
 //============================================================
 //================== Stanza Memory Mapping ===================
 //============================================================
@@ -624,8 +611,10 @@ void read_process_state (FILE* f, ProcessState* s){
   s->code = read_int(f);
 }
 
+=======
+>>>>>>> windows: stz_* types, static fns, refactor serialization
 //===== Free =====
-void free_earg (EvalArg* arg){
+static void free_earg (EvalArg* arg){
   stz_free(arg->pipe);
   if(arg->in_pipe != NULL) stz_free(arg->in_pipe);
   if(arg->out_pipe != NULL) stz_free(arg->out_pipe);
@@ -640,7 +629,7 @@ void free_earg (EvalArg* arg){
 //-------------------- Process Queries -----------------------
 //------------------------------------------------------------
 
-void get_process_state (long pid, ProcessState* s, int wait_for_termination){
+static void get_process_state (stz_long pid, ProcessState* s, int wait_for_termination){
   int status;
   int ret = waitpid(pid, &status, wait_for_termination? 0 : WNOHANG);  
   
@@ -660,14 +649,14 @@ void get_process_state (long pid, ProcessState* s, int wait_for_termination){
 //---------------------- Launcher Main -----------------------
 //------------------------------------------------------------
 
-void write_error_and_exit (int fd){
+static void write_error_and_exit (int fd){
   int code = errno;
   write(fd, &code, sizeof(int));
   close(fd);
   exit(-1);
 }
 
-void launcher_main (FILE* lin, FILE* lout){
+static void launcher_main (FILE* lin, FILE* lout){
   while(1){
     //Read in command
     int comm = fgetc(lin);
@@ -676,7 +665,7 @@ void launcher_main (FILE* lin, FILE* lout){
     //Interpret launch process command
     if(comm == LAUNCH_COMMAND){
       //Read in evaluation arguments
-      EvalArg* earg = read_earg(lin);
+      EvalArg earg = read_earg(lin);
       if(feof(lin)) exit(0);
 
       //Create error-code pipe
@@ -686,7 +675,7 @@ void launcher_main (FILE* lin, FILE* lout){
       if(pipe(exec_error) < 0) exit_with_error();
 
       //Fork a new child
-      long pid = (long)fork();
+      stz_long pid = (stz_long)fork();
       if(pid < 0) exit_with_error();
 
       if(pid > 0){
@@ -705,7 +694,7 @@ void launcher_main (FILE* lin, FILE* lout){
         else if(exec_r == sizeof(int)){
           //Exec evaluated unsuccessfully
           //Return error code as negative long
-          write_long(lout, -exec_code);
+          write_long(lout, (stz_long)-exec_code);
           fflush(lout);
         }
         else{
@@ -718,24 +707,24 @@ void launcher_main (FILE* lin, FILE* lout){
         fcntl(exec_error[WRITE], F_SETFD, FD_CLOEXEC);
         
         //Open named pipes
-        if(earg->in_pipe != NULL){
-          int fd = open_pipe(earg->pipe, earg->in_pipe, O_RDONLY);
+        if(earg.in_pipe != NULL){
+          int fd = open_pipe(earg.pipe, earg->in_pipe, O_RDONLY);
           if(fd < 0) write_error_and_exit(exec_error[WRITE]);
           dup2(fd, 0);
         }
-        if(earg->out_pipe != NULL){
-          int fd = open_pipe(earg->pipe, earg->out_pipe, O_WRONLY);
+        if(earg.out_pipe != NULL){
+          int fd = open_pipe(earg.pipe, earg->out_pipe, O_WRONLY);
           if(fd < 0) write_error_and_exit(exec_error[WRITE]);
           dup2(fd, 1);
         }
-        if(earg->err_pipe != NULL){
-          int fd = open_pipe(earg->pipe, earg->err_pipe, O_WRONLY);
+        if(earg.err_pipe != NULL){
+          int fd = open_pipe(earg.pipe, earg->err_pipe, O_WRONLY);
           if(fd < 0) write_error_and_exit(exec_error[WRITE]);
           dup2(fd, 2);
         }
         
         //Launch child process      
-        execvp(earg->file, earg->argvs);
+        execvp(earg.file, earg->argvs);
 
         //Unsuccessful exec, write error number
         write_error_and_exit(exec_error[WRITE]);
@@ -744,7 +733,7 @@ void launcher_main (FILE* lin, FILE* lout){
     //Interpret state retrieval command
     else if(comm == STATE_COMMAND || comm == WAIT_COMMAND){
       //Read in process id
-      long pid = read_long(lin);
+      stz_long pid = read_long(lin);
 
       //Retrieve state
       ProcessState s; get_process_state(pid, &s, comm == WAIT_COMMAND);
@@ -759,9 +748,9 @@ void launcher_main (FILE* lin, FILE* lout){
   }
 }
 
-long launcher_pid = -1;
-FILE* launcher_in = NULL;
-FILE* launcher_out = NULL;
+static long launcher_pid = -1;
+static FILE* launcher_in = NULL;
+static FILE* launcher_out = NULL;
 void initialize_launcher_process (){
   if(launcher_pid < 0){    
     //Create pipes
@@ -799,11 +788,11 @@ void initialize_launcher_process (){
   }
 }
 
-void make_pipe_name (char* pipe_name, int pipeid) {
+static void make_pipe_name (char* pipe_name, int pipeid) {
   sprintf(pipe_name, "/tmp/stanza_exec_pipe_%ld_%ld", (long)getpid(), (long)pipeid);
 }
 
-int delete_process_pipe (FILE* fd, char* pipe_name, char* suffix) {
+static int delete_process_pipe (FILE* fd, char* pipe_name, char* suffix) {
   if (fd != NULL) {
     int close_res = fclose(fd);
     if (close_res == EOF) return -1;
@@ -815,7 +804,7 @@ int delete_process_pipe (FILE* fd, char* pipe_name, char* suffix) {
   return 0;
 }
 
-int delete_process_pipes (FILE* input, FILE* output, FILE* error, int pipeid) {
+stz_int delete_process_pipes (FILE* input, FILE* output, FILE* error, stz_int pipeid) {
   char pipe_name[80];
   make_pipe_name(pipe_name, pipeid);
   if (delete_process_pipe(input,  pipe_name, "_in") < 0)
@@ -827,9 +816,9 @@ int delete_process_pipes (FILE* input, FILE* output, FILE* error, int pipeid) {
   return 0;
 }
 
-int launch_process (char* file, char** argvs,
-                    int input, int output, int error, int pipeid,
-                    Process* process){
+stz_int launch_process(stz_byte* file, stz_byte** argvs, stz_int input,
+                       stz_int output, stz_int error, stz_int pipeid,
+                       Process* process) {
   //Initialize launcher if necessary
   initialize_launcher_process();
   
@@ -889,7 +878,7 @@ int launch_process (char* file, char** argvs,
   }
   
   //Read back process id, and set errno if failed
-  long pid = read_long(launcher_out);
+  stz_long pid = read_long(launcher_out);
   if(pid < 0){
     errno = (int)(- pid);
     return -1;
@@ -903,7 +892,7 @@ int launch_process (char* file, char** argvs,
   return 0;
 }
 
-void retrieve_process_state (long pid, ProcessState* s, int wait_for_termination){
+void retrieve_process_state (stz_long pid, ProcessState* s, stz_int wait_for_termination){
   //Check whether launcher has been initialized
   if(launcher_pid < 0){
     fprintf(stderr, "Launcher not initialized.\n");
@@ -926,13 +915,13 @@ void retrieve_process_state (long pid, ProcessState* s, int wait_for_termination
 
 #define STACK_TYPE 6
 
-int64_t stanza_entry (VMInit* init);
+stz_long stanza_entry (VMInit* init);
 
 //     Command line arguments
 //     ======================
-int input_argc;
-char** input_argv;
-int input_argv_needs_free;
+stz_int input_argc;
+stz_byte** input_argv;
+stz_int input_argv_needs_free;
 
 //     Main Driver
 //     ===========
@@ -943,7 +932,7 @@ static void* alloc (VMInit* init, long type, long size){
   return ptr;  
 }
 
-uint64_t alloc_stack (VMInit* init){
+static uint64_t alloc_stack (VMInit* init){
   Stack* stack = alloc(init, STACK_TYPE, sizeof(Stack));
   int initial_stack_size = 4 * 1024;
   long size = initial_stack_size + sizeof(StackFrameHeader);
@@ -961,8 +950,8 @@ int main (int argc, char* argv[]) {
     init_fmalloc();
   #endif
 
-  input_argc = argc;
-  input_argv = argv;
+  input_argc = (stz_int)argc;
+  input_argv = (stz_byte **)argv;
   input_argv_needs_free = 0;
   VMInit init;
 
@@ -970,10 +959,10 @@ int main (int argc, char* argv[]) {
   const int initial_heap_size = 1024 * 1024;
   const long maximum_heap_size = 4L * 1024 * 1024 * 1024;
 
-  init.heap = (char*)stz_memory_map(initial_heap_size, maximum_heap_size);
+  init.heap = (stz_byte*)stz_memory_map(initial_heap_size, maximum_heap_size);
   init.heap_limit = init.heap + initial_heap_size;
   init.heap_top = init.heap;
-  init.free = (char*)stz_memory_map(initial_heap_size, maximum_heap_size);
+  init.free = (stz_byte*)stz_memory_map(initial_heap_size, maximum_heap_size);
   init.free_limit = init.free + initial_heap_size;
 
   //Allocate stacks

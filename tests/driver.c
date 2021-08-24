@@ -399,12 +399,12 @@ typedef struct {
 } ProcessState;
 
 typedef struct {
-  char* pipe;
-  char* in_pipe;
-  char* out_pipe;
-  char* err_pipe;
-  char* file;
-  char** argvs;
+  const char* pipe;
+  const char* in_pipe;
+  const char* out_pipe;
+  const char* err_pipe;
+  const char* file;
+  const char** argvs;
 } EvalArg;
 
 #define PROCESS_RUNNING 0
@@ -734,8 +734,8 @@ void initialize_launcher_process (){
   }
 }
 
-int launch_process (char* file, char** argvs,
-                    int input, int output, int error,
+int launch_process (const stz_byte* file, const stz_byte** argvs,
+                    stz_int input, stz_int output, stz_int error,
                     Process* process){
   //Initialize launcher if necessary
   initialize_launcher_process();
@@ -761,7 +761,7 @@ int launch_process (char* file, char** argvs,
     RETURN_NEG(make_pipe(pipe_name, "_err"))
   
   //Write in command and evaluation arguments
-  EvalArg earg = {pipe_name, NULL, NULL, NULL, file, argvs};
+  EvalArg earg = {pipe_name, NULL, NULL, NULL, (const char*)file, (const char**)argvs};
   if(input == PROCESS_IN) earg.in_pipe = "_in";
   if(output == PROCESS_OUT) earg.out_pipe = "_out";
   if(output == PROCESS_ERR) earg.out_pipe = "_err";
@@ -810,7 +810,7 @@ int launch_process (char* file, char** argvs,
   return 0;
 }
 
-void retrieve_process_state (long pid, ProcessState* s){
+void retrieve_process_state (stz_long pid, ProcessState* s){
   //Check whether launcher has been initialized
   if(launcher_pid < 0){
     fprintf(stderr, "Launcher not initialized.\n");
@@ -820,7 +820,7 @@ void retrieve_process_state (long pid, ProcessState* s){
   //Send command
   int r = fputc(STATE_COMMAND, launcher_in);
   if(r == EOF) exit_with_error();
-  write_long(launcher_in, pid);
+  write_long(launcher_in, (long)pid);
   fflush(launcher_in);
 
   //Read back process state

@@ -9,119 +9,7 @@
 #include <stdbool.h>
 
 #include "process.h"
-
-static void exit_with_error (){
-  fprintf(stderr, "%s\n", strerror(errno));
-  exit(-1);
-}
-
-static int count_non_null (void** xs){
-  int n=0;
-  while(xs[n] != NULL)
-    n++;
-  return n;
-}
-
-static void write_int (FILE* f, int x){
-  fwrite(&x, sizeof(int), 1, f);
-}
-
-static void write_string (FILE* f, char* s){
-  if(s == NULL)
-    write_int(f, -1);
-  else{
-    int n = strlen(s);
-    write_int(f, n);
-    fwrite(s, 1, n, f);
-  }
-}
-
-static void write_strings (FILE* f, char** s){
-  int n = count_non_null((void**)s);
-  write_int(f, n);
-  for(int i=0; i<n; i++)
-    write_string(f, s[i]);
-}
-
-static void write_earg (FILE* f, EvalArg* earg){
-  write_string(f, earg->pipe);
-  write_string(f, earg->in_pipe);
-  write_string(f, earg->out_pipe);
-  write_string(f, earg->err_pipe);
-  write_string(f, earg->file);
-  write_strings(f, earg->argvs);
-}
-
-static void write_process_state (FILE* f, ProcessState* s){
-  write_int(f, s->state);
-  write_int(f, s->code);
-}
-
-static void write_pid(FILE* f, pid_t pid) {
-  fwrite((char*)&pid, sizeof(pid_t), 1, f);
-}
-
-// ===== Deserialization =====
-static void bread (void* xs, int size, int n, FILE* f){
-  while(n > 0){
-    int c = fread(xs, size, n, f);
-    if(c < n){
-      if(ferror(f)) exit_with_error();
-      if(feof(f)) return;
-    }
-    n -= c;
-    xs += size * c;
-  }
-}
-
-static int read_int (FILE* f){
-  int n;
-  bread(&n, sizeof(int), 1, f);
-  return n;
-}
-
-static char* read_string (FILE* f){
-  int n = read_int(f);
-  if(n < 0)
-    return NULL;
-  else{    
-    char* s = (char*)stz_malloc(n + 1);
-    bread(s, 1, n, f);
-    s[n] = '\0';
-    return s;
-  }
-}
-
-static char** read_strings (FILE* f){
-  int n = read_int(f);
-  char** xs = (char**)stz_malloc(sizeof(char*)*(n + 1));
-  for(int i=0; i<n; i++)
-    xs[i] = read_string(f);
-  xs[n] = NULL;
-  return xs;
-}
-
-static EvalArg* read_earg (FILE* f){
-  EvalArg* earg = (EvalArg*)stz_malloc(sizeof(EvalArg));
-  earg->pipe = read_string(f);
-  earg->in_pipe = read_string(f);
-  earg->out_pipe = read_string(f);
-  earg->err_pipe = read_string(f);
-  earg->file = read_string(f);
-  earg->argvs = read_strings(f);
-  return earg;
-}
-
-static void read_process_state (FILE* f, ProcessState* s){  
-  s->state = read_int(f);
-  s->code = read_int(f);
-}
-
-static pid_t read_pid(FILE* f) {
-  pid_t ret;
-  bread(&ret, sizeof(pid_t), 1, f);
-  return ret;
-}
+#include "types.h"
 
 static char* allocating_sprintf(const char *restrict fmt, ...) {
   char* string;
@@ -206,7 +94,8 @@ static bool create_pipe (FILE** read, FILE** write) {
   return true;
 }
 
-static HANDLE open_named_pipe(char* pipe_prefix, char* suffix, FileType type) {
+static HANDLE open_named_pipe(const stz_byte* pipe_prefix,
+                              const stz_byte* suffix, FileType type) {
   char* pipe_name;
   DWORD access, attributes;
   HANDLE ret;
@@ -241,31 +130,31 @@ static char* make_pipe_name (int pipeid) {
       (long long)pipeid);
 }
 
-static void get_process_state (pid_t pid, ProcessState* s, int wait_for_termination){
+static void get_process_state (HANDLE pid, ProcessState* s, int wait_for_termination){
   *s = (ProcessState){0, 0};
 }
 
 // Takes a NULL-terminated list of strings and concatenates them using ' ' as a
 // separator. This is necessary because CreateProcess doesn't take an argument
 // list, but instead expects a string containing the current command line.
-static char* create_command_line_from_argv(char** argv) {
-  char* ret;
-  char* cursor;
+static stz_byte* create_command_line_from_argv(const stz_byte** argv) {
+  stz_byte* ret;
+  stz_byte* cursor;
   bool first;
   size_t total_length;
 
   total_length = 0;
-  for (char** arg = argv; *arg != NULL; ++arg) {
-    total_length += strlen(*arg) + 1; // plus one for the trailing ' ' or '\0'
+  for (const stz_byte** arg = argv; *arg != NULL; ++arg) {
+    total_length += strlen(C_CSTR(*arg)) + 1; // plus one for the trailing ' ' or '\0'
   }
   
-  ret = (char*)stz_malloc(total_length);
+  ret = (stz_byte*)stz_malloc(total_length);
 
   cursor = ret;
   first = true;
-  for (char** arg = argv; *arg != NULL; ++arg) {
+  for (const stz_byte** arg = argv; *arg != NULL; ++arg) {
     if (!first) *cursor++ = ' ';
-    for (char* c = *arg; *c != '\0'; ++c) {
+    for (const stz_byte* c = *arg; *c != '\0'; ++c) {
       *cursor++ = *c;
     }
     first = false;
@@ -275,25 +164,25 @@ static char* create_command_line_from_argv(char** argv) {
   return ret;
 }
 
-static BOOL create_process_from_earg(EvalArg* earg) {
-  char* command_line;
+static BOOL create_process_from_earg(EvalArg earg) {
+  LPSTR command_line;
   PROCESS_INFORMATION proc_info;
   STARTUPINFO start_info;
   BOOL success;
 
-  command_line = create_command_line_from_argv(earg->argvs);
+  command_line = (LPSTR)create_command_line_from_argv(earg.argvs);
 
   ZeroMemory(&proc_info, sizeof(PROCESS_INFORMATION));
   ZeroMemory(&start_info, sizeof(STARTUPINFO));
 
   start_info.cb = sizeof(STARTUPINFO);
-  start_info.hStdInput  = open_named_pipe(earg->pipe, earg->in_pipe, FT_READ);
-  start_info.hStdOutput = open_named_pipe(earg->pipe, earg->out_pipe, FT_WRITE);
-  start_info.hStdError  = open_named_pipe(earg->pipe, earg->err_pipe, FT_WRITE);
+  start_info.hStdInput  = open_named_pipe(earg.pipe, earg.in_pipe, FT_READ);
+  start_info.hStdOutput = open_named_pipe(earg.pipe, earg.out_pipe, FT_WRITE);
+  start_info.hStdError  = open_named_pipe(earg.pipe, earg.err_pipe, FT_WRITE);
   start_info.dwFlags |= STARTF_USESTDHANDLES;
 
   success = CreateProcess(
-      earg->file,
+      (LPCSTR)earg.file,
       command_line,
       NULL,
       NULL,
@@ -332,7 +221,7 @@ DWORD WINAPI launcher_main (LPVOID args) {
     switch (command) {
       case LAUNCH_COMMAND: {
         //Read in evaluation arguments
-        EvalArg* earg;
+        EvalArg earg;
 
         earg = read_earg(in);
         if(feof(in)) {
@@ -345,14 +234,14 @@ DWORD WINAPI launcher_main (LPVOID args) {
       //Interpret state retrieval command
       case STATE_COMMAND:
       case WAIT_COMMAND: {
-        //Read in process id
-        pid_t pid;
+        //Read in process handle
+        HANDLE handle;
         ProcessState s;
 
-        pid = read_pid(in);
+        handle = (HANDLE)read_long(in);
 
         //Retrieve state
-        get_process_state(pid, &s, command == WAIT_COMMAND);
+        get_process_state(handle, &s, command == WAIT_COMMAND);
         write_process_state(out, &s);
         fflush(out);
         break;
@@ -397,7 +286,7 @@ void initialize_launcher_process (void) {
   }
 }
 
-void retrieve_process_state (pid_t pid, ProcessState* s, int wait_for_termination) {
+void retrieve_process_state (stz_long handle, ProcessState* s, stz_int wait_for_termination) {
   // Check whether launcher has been initialized
   if (launcher_thread == NULL){
     fprintf(stderr, "Launcher not initialized.\n");
@@ -408,16 +297,16 @@ void retrieve_process_state (pid_t pid, ProcessState* s, int wait_for_terminatio
   if(!fputc(wait_for_termination ? WAIT_COMMAND : STATE_COMMAND, launcher_in)) {
     exit_with_error();
   }
-  write_pid(launcher_in, pid);
+  write_long(launcher_in, handle);
   fflush(launcher_in);
 
   //Read back process state
   read_process_state(launcher_out, s);
 }
 
-int launch_process (char* file, char** argvs,
-                    int input, int output, int error, int pipeid,
-                    Process* process) {
+stz_int launch_process(const stz_byte* file, const stz_byte** argvs,
+                       stz_int input, stz_int output, stz_int error,
+                       stz_int pipeid, Process* process) {
   char* pipe_name;
   int pipe_sources[NUM_STREAM_SPECS];
   EvalArg earg;
@@ -436,12 +325,12 @@ int launch_process (char* file, char** argvs,
   pipe_sources[error] = 2;
   
   //Write in command and evaluation arguments
-  earg = (EvalArg){pipe_name, NULL, NULL, NULL, file, argvs};
-  if(input == PROCESS_IN) earg.in_pipe = "_in";
-  if(output == PROCESS_OUT) earg.out_pipe = "_out";
-  if(output == PROCESS_ERR) earg.out_pipe = "_err";
-  if(error == PROCESS_OUT) earg.err_pipe = "_out";
-  if(error == PROCESS_ERR) earg.err_pipe = "_err";
+  earg = (EvalArg){STZ_CSTR(pipe_name), NULL, NULL, NULL, file, argvs};
+  if(input  == PROCESS_IN)  earg.in_pipe  = STZ_CSTR("_in");
+  if(output == PROCESS_OUT) earg.out_pipe = STZ_CSTR("_out");
+  if(output == PROCESS_ERR) earg.out_pipe = STZ_CSTR("_err");
+  if(error  == PROCESS_OUT) earg.err_pipe = STZ_CSTR("_out");
+  if(error  == PROCESS_ERR) earg.err_pipe = STZ_CSTR("_err");
 
   if(fputc(LAUNCH_COMMAND, launcher_in) == EOF) return -1;
 
@@ -468,21 +357,21 @@ int launch_process (char* file, char** argvs,
   }
   
   //Read back process id, and set errno if failed
-  pid_t pid = read_pid(launcher_out);
-  if(pid < 0){
-    errno = (int)(-pid);
+  stz_long handle = read_long(launcher_out);
+  if(handle <= 0){
+    errno = (int)(-handle);
     return -1;
   } 
   
   //Return process structure
-  process->pid = pid;
+  process->pid = handle;
   process->in = fin;
   process->out = fout;
   process->err = ferr;
   return 0;
 }
 
-static int delete_process_pipe (FILE* f, char* pipe_prefix, char* suffix) {
+static int delete_process_pipe (FILE* f, const char* pipe_prefix, const char* suffix) {
   char* pipe_name;
   int ret;
 
@@ -500,7 +389,7 @@ END:
   return ret;
 }
 
-int delete_process_pipes (FILE* input, FILE* output, FILE* error, int pipeid) {
+stz_int delete_process_pipes (FILE* input, FILE* output, FILE* error, stz_int pipeid) {
   char* pipe_name;
   int ret;
 
@@ -517,5 +406,5 @@ int delete_process_pipes (FILE* input, FILE* output, FILE* error, int pipeid) {
 
 END:
   stz_free(pipe_name);
-  return ret;
+  return (stz_int)ret;
 }
