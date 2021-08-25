@@ -13,7 +13,6 @@ CFILES=(
     compiler/cvm.c
     runtime/linenoise-win32.c
     runtime/driver.c
-    runtime/process-win32.c
 )
 
 [[ ! -d "build" ]] && mkdir build
