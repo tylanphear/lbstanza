@@ -708,23 +708,23 @@ static void launcher_main (FILE* lin, FILE* lout){
         
         //Open named pipes
         if(earg.in_pipe != NULL){
-          int fd = open_pipe(earg.pipe, earg->in_pipe, O_RDONLY);
+          int fd = open_pipe(earg.pipe, earg.in_pipe, O_RDONLY);
           if(fd < 0) write_error_and_exit(exec_error[WRITE]);
           dup2(fd, 0);
         }
         if(earg.out_pipe != NULL){
-          int fd = open_pipe(earg.pipe, earg->out_pipe, O_WRONLY);
+          int fd = open_pipe(earg.pipe, earg.out_pipe, O_WRONLY);
           if(fd < 0) write_error_and_exit(exec_error[WRITE]);
           dup2(fd, 1);
         }
         if(earg.err_pipe != NULL){
-          int fd = open_pipe(earg.pipe, earg->err_pipe, O_WRONLY);
+          int fd = open_pipe(earg.pipe, earg.err_pipe, O_WRONLY);
           if(fd < 0) write_error_and_exit(exec_error[WRITE]);
           dup2(fd, 2);
         }
         
         //Launch child process      
-        execvp(earg.file, earg->argvs);
+        execvp(earg.file, earg.argvs);
 
         //Unsuccessful exec, write error number
         write_error_and_exit(exec_error[WRITE]);
