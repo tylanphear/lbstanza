@@ -127,20 +127,30 @@ static bool is_executable_path(const char* path) {
 // it, otherwise return NULL.
 static LPSTR find_candidate_in_path(const char* file) {
   StringList* candidates;
-  char *candidate_path, *ret;
+  const char *candidate_dir;
+  char *candidate_path, *candidate_exe_path, *ret;
 
   ret = NULL;
 
   candidates = split_string(getenv("PATH"), ';');
   for (int i = 0; i < candidates->n; ++i) {
-    candidate_path = allocating_sprintf("%s\\%s", candidates->strings[i], file);
+    candidate_dir = C_CSTR(candidates->strings[i]);
 
+    // First check if the given file as-is is an executable path
+    candidate_path = allocating_sprintf("%s\\%s", candidate_dir, file);
     if (is_executable_path(candidate_path)) {
       ret = candidate_path;
       break;
     }
-
     stz_free(candidate_path);
+
+    // Otherwise, check if the file with ".exe" appended is an executable path
+    candidate_exe_path = allocating_sprintf("%s\\%s.exe", candidate_dir, file);
+    if (is_executable_path(candidate_exe_path)) {
+      ret = candidate_exe_path;
+      break;
+    }
+    stz_free(candidate_exe_path);
   }
 
   free_stringlist(candidates);
