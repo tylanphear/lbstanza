@@ -36,10 +36,11 @@ static FILE* file_from_handle(HANDLE handle, FileType type) {
   int fd;
   int osflags;
   char* mode;
+  FILE* file;
 
   switch (type) {
-    case FT_READ:  osflags = _O_RDONLY; break;
-    case FT_WRITE: osflags = _O_WRONLY; break;
+    case FT_READ:  osflags = _O_RDONLY | _O_BINARY; break;
+    case FT_WRITE: osflags = _O_WRONLY | _O_BINARY; break;
   }
 
   switch (type) {
@@ -50,361 +51,352 @@ static FILE* file_from_handle(HANDLE handle, FileType type) {
   fd = _open_osfhandle((intptr_t)handle, osflags);
   if (fd == -1) return NULL;
 
-  return _fdopen(fd, mode);
-}
+  file = _fdopen(fd, mode);
+  if (file == NULL) return NULL;
 
-#define PIPE_PREFIX "\\\\.\\pipe\\"
-#define PIPE_SIZE 4096
+  setvbuf(file, NULL, _IONBF, 0);
 
-static FILE* create_named_pipe (char* prefix, char* suffix, FileType type) {
-  char* pipe_name;
-  HANDLE pipe_handle;
-
-  pipe_name = allocating_sprintf(PIPE_PREFIX "%s%s", prefix, suffix);
-
-  pipe_handle = CreateNamedPipe(
-      pipe_name,
-      PIPE_ACCESS_DUPLEX,
-      PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-      1,
-      PIPE_SIZE,
-      PIPE_SIZE,
-      NMPWAIT_USE_DEFAULT_WAIT,
-      NULL
-  );
-
-  stz_free(pipe_name);
-
-  return file_from_handle(pipe_handle, type);
-}
-
-static bool create_pipe (FILE** read, FILE** write) {
-  HANDLE read_handle, write_handle;
-
-  if (!CreatePipe(&read_handle, &write_handle, NULL, 0)) {
-    return false;
-  }
-
-  *read = file_from_handle(read_handle, FT_READ);
-  *write = file_from_handle(write_handle, FT_WRITE);
-
-  if (*read == NULL || *write == NULL) {
-    return false;
-  }
-  return true;
-}
-
-static HANDLE open_named_pipe(const stz_byte* pipe_prefix,
-                              const stz_byte* suffix, FileType type) {
-  char* pipe_name;
-  DWORD access, attributes;
-  HANDLE ret;
-
-  switch (type) {
-    case FT_READ:  access = GENERIC_READ;  break;
-    case FT_WRITE: access = GENERIC_WRITE; break;
-  }
-
-  switch (type) {
-    case FT_READ:  attributes = FILE_ATTRIBUTE_READONLY; break;
-    case FT_WRITE: attributes = FILE_ATTRIBUTE_NORMAL;   break;
-  }
-
-  pipe_name = allocating_sprintf("%s%s", pipe_prefix, suffix);
-  if (!WaitNamedPipe(pipe_name, NMPWAIT_WAIT_FOREVER)) {
-    ret = INVALID_HANDLE_VALUE;
-    goto END;
-  }
-
-  ret = CreateFile(pipe_name, access, 0, NULL, OPEN_EXISTING, attributes, NULL);
-
-END:
-  stz_free(pipe_name);
-  return ret;
-}
-
-static char* make_pipe_name (int pipeid) {
-  return allocating_sprintf(
-      PIPE_PREFIX "%ld_%ld",
-      (long long)GetCurrentProcessId(),
-      (long long)pipeid);
-}
-
-static void get_process_state (HANDLE pid, ProcessState* s, int wait_for_termination){
-  *s = (ProcessState){0, 0};
+  return file;
 }
 
 // Takes a NULL-terminated list of strings and concatenates them using ' ' as a
 // separator. This is necessary because CreateProcess doesn't take an argument
 // list, but instead expects a string containing the current command line.
-static stz_byte* create_command_line_from_argv(const stz_byte** argv) {
-  stz_byte* ret;
-  stz_byte* cursor;
+static char* create_command_line_from_argv(const stz_byte** argv) {
+  char* ret;
+  char* cursor;
   bool first;
   size_t total_length;
 
   total_length = 0;
   for (const stz_byte** arg = argv; *arg != NULL; ++arg) {
-    total_length += strlen(C_CSTR(*arg)) + 1; // plus one for the trailing ' ' or '\0'
+    total_length += strlen(C_CSTR(*arg)) + 3; // +1 for the trailing ' ' or '\0',
+                                              // +2 for the enclosing '"'s
   }
-  
-  ret = (stz_byte*)stz_malloc(total_length);
+
+  ret = (char*)stz_malloc(total_length);
 
   cursor = ret;
   first = true;
   for (const stz_byte** arg = argv; *arg != NULL; ++arg) {
     if (!first) *cursor++ = ' ';
-    for (const stz_byte* c = *arg; *c != '\0'; ++c) {
-      *cursor++ = *c;
-    }
     first = false;
+
+    *cursor++ = '"';
+    for (const stz_byte* c = *arg; *c != '\0'; ++c) {
+      *cursor++ = (char)*c;
+    }
+    *cursor++ = '"';
   }
-  *cursor = '\0';
+  *cursor++ = '\0';
 
   return ret;
 }
 
-static BOOL create_process_from_earg(EvalArg earg) {
-  LPSTR command_line;
-  PROCESS_INFORMATION proc_info;
-  STARTUPINFO start_info;
-  BOOL success;
+// Split a given string into a list of strings according to a delimeter
+static StringList* split_string(const char* str, char delimeter) {
+  StringList* list;
+  const char *start, *end;
+  char *current;
 
-  command_line = (LPSTR)create_command_line_from_argv(earg.argvs);
+  list = make_stringlist(1);
+  start = str;
+  while ((end = strchr(start, delimeter)) != NULL) {
+    current = (char*)stz_malloc(end - start + 1);
+    strncpy(current, start, end - start);
+    current[end - start] = '\0';
 
-  ZeroMemory(&proc_info, sizeof(PROCESS_INFORMATION));
-  ZeroMemory(&start_info, sizeof(STARTUPINFO));
+    stringlist_add(list, STZ_CSTR(current));
+    stz_free(current);
 
-  start_info.cb = sizeof(STARTUPINFO);
-  start_info.hStdInput  = open_named_pipe(earg.pipe, earg.in_pipe, FT_READ);
-  start_info.hStdOutput = open_named_pipe(earg.pipe, earg.out_pipe, FT_WRITE);
-  start_info.hStdError  = open_named_pipe(earg.pipe, earg.err_pipe, FT_WRITE);
-  start_info.dwFlags |= STARTF_USESTDHANDLES;
+    start = ++end;
+  }
 
-  success = CreateProcess(
-      (LPCSTR)earg.file,
-      command_line,
-      NULL,
-      NULL,
-      TRUE,
-      0,
-      NULL,
-      NULL,
-      &start_info,
-      &proc_info);
-
-  stz_free(command_line);
-
-  return success;
+  return list;
 }
 
-struct launcher_args {
-  FILE* in;
-  FILE* out;
-};
-DWORD WINAPI launcher_main (LPVOID args) {
-  HANDLE in, out;
-
-  in = ((struct launcher_args*)args)->in;
-  out = ((struct launcher_args*)args)->out;
-
-  while (true) {
-    //Read in command
-    int command;
-
-    command = fgetc(in);
-    if (feof(in)) {
-      ExitThread(0);
-    }
-
-    //Interpret launch process command
-    switch (command) {
-      case LAUNCH_COMMAND: {
-        //Read in evaluation arguments
-        EvalArg earg;
-
-        earg = read_earg(in);
-        if(feof(in)) {
-          ExitThread(0);
-        }
-
-        create_process_from_earg(earg);
-        break;
-      }
-      //Interpret state retrieval command
-      case STATE_COMMAND:
-      case WAIT_COMMAND: {
-        //Read in process handle
-        HANDLE handle;
-        ProcessState s;
-
-        handle = (HANDLE)read_long(in);
-
-        //Retrieve state
-        get_process_state(handle, &s, command == WAIT_COMMAND);
-        write_process_state(out, &s);
-        fflush(out);
-        break;
-      }
-      //Unrecognized command
-      default:
-        fprintf(stderr, "Illegal command: %d\n", command);
-        exit(-1);
-        break;
-    }
-  }
-  ExitThread(1);
+static bool is_executable_path(const char* path) {
+  DWORD binary_type;
+  return GetBinaryTypeA(path, &binary_type) &&
+    (binary_type == SCS_32BIT_BINARY ||
+     binary_type == SCS_64BIT_BINARY);
 }
 
-// Start a launcher thread that receives commands from the parent thread
-// and then spawns/maintains child threads of its own depending on which
-// commands were received.
-static HANDLE launcher_thread = NULL;
-static FILE* launcher_in = NULL;
-static FILE* launcher_out = NULL;
-void initialize_launcher_process (void) {
-  if (launcher_thread == NULL) {
-    struct launcher_args* args;
+// Iterate over all the directories in PATH and determine in which directory
+// there exists an executable with the given file name. If one is found, return
+// it, otherwise return NULL.
+static LPSTR find_candidate_in_path(const char* file) {
+  StringList* candidates;
+  char *candidate_path, *ret;
 
-    args = (struct launcher_args*)HeapAlloc(
-        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(struct launcher_args));
-    create_pipe(&args->in, &launcher_in);
-    create_pipe(&launcher_out, &args->out);
+  ret = NULL;
 
-    launcher_thread = CreateThread(
-        NULL,
-        0,
-        (LPTHREAD_START_ROUTINE)launcher_main,
-        (LPVOID)&args,
-        0,
-        NULL
-    );
+  candidates = split_string(getenv("PATH"), ';');
+  for (int i = 0; i < candidates->n; ++i) {
+    candidate_path = allocating_sprintf("%s\\%s", candidates->strings[i], file);
 
-    if (launcher_thread == NULL) {
-      exit_with_error();
+    if (is_executable_path(candidate_path)) {
+      ret = candidate_path;
+      break;
     }
+
+    stz_free(candidate_path);
   }
+
+  free_stringlist(candidates);
+  return ret;
 }
 
-void retrieve_process_state (stz_long handle, ProcessState* s, stz_int wait_for_termination) {
-  // Check whether launcher has been initialized
-  if (launcher_thread == NULL){
-    fprintf(stderr, "Launcher not initialized.\n");
-    exit(-1);
+static bool contains_path_separator(const char* file) {
+  // Windows accepts both '/' and '\' in most APIs
+  return strchr(file, '\\') != NULL ||
+         strchr(file, '/')  != NULL;
+}
+
+// Accept a path which may be relative (e.g. contains '..' or '.') and contain
+// forward-slashes, and convert it to an absolute path with back-slashes
+static char* normalize_path(const char* file) {
+  char* normalized_path;
+
+  normalized_path = (char*)malloc(MAX_PATH * sizeof(char));
+  if (!GetFullPathName(file, MAX_PATH, normalized_path, NULL)) {
+    return NULL;
   }
 
-  // Send command
-  if(!fputc(wait_for_termination ? WAIT_COMMAND : STATE_COMMAND, launcher_in)) {
-    exit_with_error();
-  }
-  write_long(launcher_in, handle);
-  fflush(launcher_in);
+  return normalized_path;
+}
 
-  //Read back process state
-  read_process_state(launcher_out, s);
+void initialize_launcher_process (void) { /* stub */ }
+
+void retrieve_process_state (stz_long pid, ProcessState* s, stz_int wait_for_termination) {
+  ProcessState state;
+  HANDLE process;
+  DWORD exit_code;
+
+  state = (ProcessState){PROCESS_RUNNING, 0};
+
+  process = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+  if (process == NULL) {
+    goto END;
+  }
+
+  if (wait_for_termination == 1) {
+    if (WaitForSingleObject(process, INFINITE) == WAIT_FAILED) {
+      goto END;
+    }
+  }
+
+  if (!GetExitCodeProcess(process, &exit_code)) {
+    goto END;
+  }
+
+  if (exit_code != STILL_ACTIVE) {
+    state = (ProcessState){PROCESS_DONE, (stz_int)exit_code};
+  }
+
+END:
+  *s = state;
+}
+
+typedef enum {
+  PIPE_IN,
+  PIPE_OUT
+} PipeType;
+
+static void create_pipe(PHANDLE read, PHANDLE write, PipeType type) {
+  SECURITY_ATTRIBUTES security_attrs;
+  PHANDLE our_end;
+
+  ZeroMemory(&security_attrs, sizeof(SECURITY_ATTRIBUTES));
+  security_attrs.nLength = sizeof(SECURITY_ATTRIBUTES);
+  security_attrs.lpSecurityDescriptor = NULL;
+  security_attrs.bInheritHandle = TRUE;
+
+  switch (type) {
+    case PIPE_IN:  our_end = read;  break;
+    case PIPE_OUT: our_end = write; break;
+  }
+
+  CreatePipe(read, write, &security_attrs, 0);
+  SetHandleInformation(*our_end, HANDLE_FLAG_INHERIT, 0);
+}
+
+static HANDLE duplicate_standard_handle(int handle) {
+  HANDLE ret;
+
+  if (!DuplicateHandle(
+        /* hSourceProcessHandle */ GetCurrentProcess(),
+        /* hSourceHandle        */ GetStdHandle(handle),
+        /* hTargetProcessHandle */ GetCurrentProcess(),
+        /* lpTargetHandle       */ &ret,
+        /* dwDesiredAccess      */ 0,
+        /* bInheritHandle       */ TRUE,
+        /* dwOptions            */ DUPLICATE_SAME_ACCESS)) {
+    return NULL;
+  }
+
+  return ret;
+}
+
+static void setup_file_handles(
+    stz_int input, stz_int output, stz_int error,
+    PHANDLE process_stdin_read, PHANDLE process_stdin_write,
+    PHANDLE process_stdout_read, PHANDLE process_stdout_write,
+    PHANDLE process_stderr_read, PHANDLE process_stderr_write) {
+
+  HANDLE stdin_read, stdin_write,
+         stdout_read, stdout_write,
+         stderr_read, stderr_write;
+
+  // Initialize all our handles to NULL (just in case)
+  *process_stdin_read   = NULL;
+  *process_stdin_write  = NULL;
+  *process_stdout_read  = NULL;
+  *process_stdout_write = NULL;
+  *process_stderr_read  = NULL;
+  *process_stderr_write = NULL;
+
+  // Compute which pipes we want to open
+  int pipe_sources[NUM_STREAM_SPECS] = { -1 };
+  pipe_sources[input]  = 0;
+  pipe_sources[output] = 1;
+  pipe_sources[error]  = 2;
+
+  // Open the pipes we requested
+  if (pipe_sources[PROCESS_IN] >= 0) {
+    create_pipe(&stdin_read, &stdin_write, PIPE_OUT);
+  }
+  if (pipe_sources[PROCESS_OUT] >= 0) {
+    create_pipe(&stdout_read, &stdout_write, PIPE_IN);
+  }
+  if (pipe_sources[PROCESS_ERR] >= 0) {
+    create_pipe(&stderr_read, &stderr_write, PIPE_IN);
+  }
+
+  // Input can either be redirected to an IN pipe or re-use parent's STDIN
+  if (input == PROCESS_IN) {
+    *process_stdin_read  = stdin_read;
+    *process_stdin_write = stdin_write;
+  }
+  else {
+    *process_stdin_read  = duplicate_standard_handle(STD_INPUT_HANDLE);
+    *process_stdin_write = NULL;
+  }
+
+  // Output can be redirected to an OUT or ERR pipe or re-use parent's STDOUT
+  if (output == PROCESS_OUT) {
+    *process_stdout_read  = stdout_read;
+    *process_stdout_write = stdout_write;
+  }
+  else if (output == PROCESS_ERR) {
+    *process_stderr_read  = stdout_read;
+    *process_stderr_write = stdout_write;
+  }
+  else {
+    *process_stdout_read  = NULL;
+    *process_stdout_write = duplicate_standard_handle(STD_OUTPUT_HANDLE);
+  }
+
+  // Error can be redirected to an OUT or ERR pipe or re-use parent's STDERR
+  if (error == PROCESS_OUT) {
+    *process_stderr_read  = stdout_read;
+    *process_stderr_write = stdout_write;
+  }
+  else if (error == PROCESS_ERR) {
+    *process_stderr_read  = stderr_read;
+    *process_stderr_write = stderr_write;
+  }
+  else {
+    *process_stderr_read  = NULL;
+    *process_stderr_write = duplicate_standard_handle(STD_ERROR_HANDLE);
+  }
 }
 
 stz_int launch_process(const stz_byte* file, const stz_byte** argvs,
                        stz_int input, stz_int output, stz_int error,
                        stz_int pipeid, Process* process) {
-  char* pipe_name;
-  int pipe_sources[NUM_STREAM_SPECS];
-  EvalArg earg;
+  const char* file_str;
+  LPSTR command_line, executable;
+  PROCESS_INFORMATION proc_info;
+  STARTUPINFO start_info;
+  HANDLE stdin_read, stdin_write,
+         stdout_read, stdout_write,
+         stderr_read, stderr_write;
+  BOOL success;
 
-  //Initialize launcher if necessary
-  initialize_launcher_process();
+  // Create a command line using the given argv. This is necessary because
+  // Window's CreateProcess expects a full command-line (process name +
+  // arguments), rather than passing in a list of args (like exec* on POSIX)
+  command_line = (LPSTR)create_command_line_from_argv(argvs);
 
-  pipe_name = make_pipe_name(pipeid);
+  // Find an executable path using the given file. If we were given a path,
+  // normalize it, in case it is relative or has forward-slashes If it's a
+  // file, find the path of a corresponding executable on PATH
+  file_str = C_CSTR(file);
+  executable = contains_path_separator(file_str)
+    ? normalize_path(file_str)
+    : find_candidate_in_path(file_str);
 
-  //Compute pipe sources
-  for (int i = 0; i < NUM_STREAM_SPECS; ++i) {
-    pipe_sources[i] = -1;
-  }
-  pipe_sources[input] = 0;
-  pipe_sources[output] = 1;
-  pipe_sources[error] = 2;
-  
-  //Write in command and evaluation arguments
-  earg = (EvalArg){STZ_CSTR(pipe_name), NULL, NULL, NULL, file, argvs};
-  if(input  == PROCESS_IN)  earg.in_pipe  = STZ_CSTR("_in");
-  if(output == PROCESS_OUT) earg.out_pipe = STZ_CSTR("_out");
-  if(output == PROCESS_ERR) earg.out_pipe = STZ_CSTR("_err");
-  if(error  == PROCESS_OUT) earg.err_pipe = STZ_CSTR("_out");
-  if(error  == PROCESS_ERR) earg.err_pipe = STZ_CSTR("_err");
-
-  if(fputc(LAUNCH_COMMAND, launcher_in) == EOF) return -1;
-
-  write_earg(launcher_in, &earg);
-  fflush(launcher_in);
-
-  //Open pipes to child
-  FILE* fin = NULL;
-  if(pipe_sources[PROCESS_IN] >= 0){
-    fin = create_named_pipe(pipe_name, "_in", FT_WRITE);
-    if(fin == NULL) return -1;
-  }
-
-  FILE* fout = NULL;
-  if(pipe_sources[PROCESS_OUT] >= 0){
-    fout = create_named_pipe(pipe_name, "_out", FT_READ);
-    if(fout == NULL) return -1;
-  }
-
-  FILE* ferr = NULL;
-  if(pipe_sources[PROCESS_ERR] >= 0){
-    ferr = create_named_pipe(pipe_name, "_err", FT_READ);
-    if(ferr == NULL) return -1;
-  }
-  
-  //Read back process id, and set errno if failed
-  stz_long handle = read_long(launcher_out);
-  if(handle <= 0){
-    errno = (int)(-handle);
-    return -1;
-  } 
-  
-  //Return process structure
-  process->pid = handle;
-  process->in = fin;
-  process->out = fout;
-  process->err = ferr;
-  return 0;
-}
-
-static int delete_process_pipe (FILE* f, const char* pipe_prefix, const char* suffix) {
-  char* pipe_name;
-  int ret;
-
-  pipe_name = allocating_sprintf("%s%s", pipe_prefix, suffix);
-  if ((ret = fclose(f)) < 0) {
+  if (command_line == NULL || executable == NULL) {
+    success = FALSE;
     goto END;
   }
 
-  if ((ret = remove(pipe_name)) < 0) {
-    goto END;
-  }
+  // Set up our STDIN, STDOUT, and STDERR
+  setup_file_handles(input, output, error,
+      &stdin_read, &stdin_write,
+      &stdout_read, &stdout_write,
+      &stderr_read, &stderr_write
+  );
+
+  // Now that we have our handles, set up STARTUPINFO so that the child process will use them
+  ZeroMemory(&start_info, sizeof(STARTUPINFO));
+  start_info.cb = sizeof(STARTUPINFO);
+  start_info.hStdInput  = stdin_read;
+  start_info.hStdOutput = stdout_write;
+  start_info.hStdError  = stderr_write;
+  start_info.dwFlags |= STARTF_USESTDHANDLES;
+
+  // Zero out our process information in ancipication of CreateProcess
+  // populating it, and then launch our process.
+  ZeroMemory(&proc_info, sizeof(PROCESS_INFORMATION));
+  success = CreateProcess(
+      /* lpApplicationName    */ executable,
+      /* lpCommandLine        */ command_line,
+      /* lpProcessAttributes  */ NULL,
+      /* lpThreadAttributes   */ NULL,
+      /* bInheritHandles      */ TRUE,
+      /* dwCreationFlags      */ 0,
+      /* lpEnvironment        */ NULL,
+      /* lpCurrentDirectory   */ NULL,
+      /* lpStartupInfo        */ &start_info,
+      /* lpProcessInformation */ &proc_info);
 
 END:
-  stz_free(pipe_name);
-  return ret;
+  stz_free(executable);
+  stz_free(command_line);
+
+  if (success) {
+    // Populate process with the relevant info
+    process->pid = (stz_long)proc_info.dwProcessId;
+    process->pipeid = -1; // -1 signals we didn't create named pipes for this process
+    process->in  = file_from_handle(stdin_write, FT_WRITE);
+    process->out = file_from_handle(stdout_read, FT_READ);
+    process->err = file_from_handle(stderr_read, FT_READ);
+
+    // Close the handles we passed into the child process
+    if (stdin_read   != NULL) CloseHandle(stdin_read);
+    if (stdout_write != NULL) CloseHandle(stdout_write);
+    if (stderr_write != NULL) CloseHandle(stderr_write);
+
+    // Close these left-over handles to the process
+    CloseHandle(proc_info.hThread);
+    CloseHandle(proc_info.hProcess);
+  }
+
+  return success ? 0 : -1;
 }
 
 stz_int delete_process_pipes (FILE* input, FILE* output, FILE* error, stz_int pipeid) {
-  char* pipe_name;
-  int ret;
-
-  pipe_name = make_pipe_name(pipeid);
-  if ((ret = delete_process_pipe(input, pipe_name, "_in")) < 0) {
-    goto END;
-  }
-  if ((ret = delete_process_pipe(output, pipe_name, "_out")) < 0) {
-    goto END;
-  }
-  if ((ret = delete_process_pipe(error, pipe_name, "_err")) < 0) {
-    goto END;
-  }
-
-END:
-  stz_free(pipe_name);
-  return (stz_int)ret;
+  return 0;
 }
