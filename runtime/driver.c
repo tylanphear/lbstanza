@@ -132,7 +132,7 @@ stz_long file_write_block (FILE* f, char* data, stz_long len) {
         stz_free(path);
         return NULL;
       }else{
-        return (stz_byte*)path;
+        return STZ_STR(path);
       }             
     }
     else{
@@ -471,21 +471,20 @@ static int make_pipe (char* prefix, char* suffix){
   return mkfifo(name, S_IRUSR|S_IWUSR);
 }
 
-<<<<<<< HEAD
 //============================================================
 //================== Stanza Memory Mapping ===================
 //============================================================
 
 //Set protection bits on address range p (inclusive) to p + size (exclusive).
 //Fatal error if size > 0 and mprotect fails.
-static void protect(void* p, long size, int prot) {
-  if (size && mprotect(p, size, prot)) exit_with_error();
+static void protect(void* p, stz_long size, stz_int prot) {
+  if (size && mprotect(p, (size_t)size, prot)) exit_with_error();
 }
 
 //Allocates a segment of memory that is min_size allocated, and can be
 //resized up to max_size. 
-void* stz_memory_map (long min_size, long max_size) {
-  void* p = mmap(NULL, max_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+void* stz_memory_map (stz_long min_size, stz_long max_size) {
+  void* p = mmap(NULL, (size_t)max_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (p == MAP_FAILED) exit_with_error();
 
   protect(p, min_size, PROT_READ | PROT_WRITE | PROT_EXEC);
@@ -493,16 +492,16 @@ void* stz_memory_map (long min_size, long max_size) {
 }
 
 //Unmaps the region of mememory. 
-void stz_memory_unmap (void* p, long size) {
-  if (p && munmap(p, size)) exit_with_error();
+void stz_memory_unmap (void* p, stz_long size) {
+  if (p && munmap(p, (size_t)size)) exit_with_error();
 }
 
 //Resizes the given segment.
 //old_size is assumed to be the size that is already allocated.
 //new_size is the size that we desired to be allocated.
-void stz_memory_resize (void* p, long old_size, long new_size) {
-  long min_size = old_size;
-  long max_size = new_size;
+void stz_memory_resize (void* p, stz_long old_size, stz_long new_size) {
+  stz_long min_size = old_size;
+  stz_long max_size = new_size;
   int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
 
   if (min_size > max_size) {
@@ -611,8 +610,6 @@ void read_process_state (FILE* f, ProcessState* s){
   s->code = read_int(f);
 }
 
-=======
->>>>>>> windows: stz_* types, static fns, refactor serialization
 //===== Free =====
 static void free_earg (EvalArg* arg){
   stz_free(arg->pipe);
